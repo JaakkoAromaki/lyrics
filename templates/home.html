@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>playing</title>
+
+<style>
+
+@font-face {
+    font-family: 'BebasNeue';
+    src: url("{{ url_for('static', filename='fonts/BebasNeue-Regular.ttf') }}") format('truetype');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
+body {
+    background: #171717;
+    color: white;
+    font-family: 'BebasNeue', sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 50px 15px;
+    overflow: hidden;
+}
+.container {
+    width: 600px;
+    max-width: 100%;
+}
+
+h1 {
+    color: #1ed760;
+}
+
+#lyrics {
+    line-height: 2;
+    color: #ccc;
+    margin-top: 35px;
+    font-size: 60px;
+}
+
+.line {
+    opacity: 0.35;
+    font-size: 28px;
+    transition: opacity 0.25s, color 0.25s, transform 0.2s;
+    transform-origin: center;
+    text-align: center;
+}
+
+.line.active {
+    opacity: 1;
+    color: #1ed760;
+    transform: scale(1.5);
+    text-align: center;
+}
+
+.muted {
+    color: #888;
+}
+</style>
+</head>
+
+<body>
+<div class="container">
+    <h2 id="title">Nothing playing</h2>
+    <p id="artist" class="muted"></p>
+
+    <div id="lyrics">Waiting for music...</div>
+</div>
+
+<script>
+const OFFSET = 0;            // seconds; raise if lyrics feel late, lower if early
+
+let currentTrack = "";
+let parsedLyrics = [];       // [{ time, text }]
+let lastIndex = -1;
+
+let basePosition = 0;        // seconds, last known position from the server
+let baseTime = performance.now();
+let paused = false;
+
+function formatTime(sec) {
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    return m + ":" + String(s).padStart(2, "0");
+}
+
+function isSynced(text) {
+    return /\[\d+:\d+(\.\d+)?\]/.test(text || "");
+}
+
+function parseLRC(text) {
+    const lines = [];
+    for (const raw of text.split("\n")) {
+        const m = raw.match(/^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/);
+        if (m) {
+            lines.push({
+                time: parseInt(m[1]) * 60 + parseFloat(m[2]),
+                text: m[3]
+            });
+        }
+    }
+    return lines;
+}
+
+function renderLyrics() {
+    const box = document.getElementById("lyrics");
+    box.innerHTML = "";
+
+    parsedLyrics.forEach((l, i) => {
+        const div = document.createElement("div");
+        div.className = "line";
+        div.id = "line-" + i;
+        div.textContent = l.text || "♪";
+        box.appendChild(div);
+    });
+}
+
+function getPosition() {
+    return basePosition + (performance.now() - baseTime) / 1000;
+}
+
+function tick() {
+    if (paused) return;
+
+    const now = getPosition() + OFFSET;
+    //document.getElementById("currentTime").textContent = formatTime(getPosition());
+
+    if (!parsedLyrics.length) return;
+
+    // last line whose timestamp has passed
+    let idx = -1;
+    for (let i = 0; i < parsedLyrics.length; i++) {
+        if (parsedLyrics[i].time <= now) idx = i;
+        else break;
+    }
+
+    if (idx !== lastIndex) {
+        if (lastIndex >= 0) {
+            document.getElementById("line-" + lastIndex)?.classList.remove("active");
+        }
+        lastIndex = idx;
+
+        const el = document.getElementById("line-" + idx);
+        if (el) {
+            el.classList.add("active");
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+    }
+}
+
+async function update() {
+    try {
+        const response = await fetch("/api/current");
+        const data = await response.json();
+
+        if (!data.playing) {
+            document.getElementById("title").textContent = "nothing playing :(";
+            document.getElementById("artist").textContent = "";
+            document.getElementById("lyrics").textContent = "play some music!";
+            document.getElementById("currentTime").textContent = "0:00";
+            currentTrack = "";
+            parsedLyrics = [];
+            lastIndex = -1;
+            return;
+        }
+
+        document.getElementById("title").textContent = data.title;
+        document.getElementById("artist").textContent =
+            data.artist + (data.album ? " • " + data.album : "");
+
+        paused = !!data.paused;
+
+        const track = data.artist + " - " + data.title;
+        const trackChanged = track !== currentTrack;
+
+        if (trackChanged) {
+            currentTrack = track;
+            lastIndex = -1;
+
+            // no position from the backend? start counting from now
+            basePosition = 0;
+            baseTime = performance.now();
+
+            if (isSynced(data.lyrics)) {
+                parsedLyrics = parseLRC(data.lyrics);
+                renderLyrics();
+            } else {
+                parsedLyrics = [];
+                document.getElementById("lyrics").textContent =
+                    data.lyrics || "lyrics not found on this one :c";
+            }
+        }
+
+        // resync to the real playback position every poll (removes drift)
+        if (typeof data.position === "number") {
+            basePosition = data.position;
+            baseTime = performance.now();
+        }
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+update();
+setInterval(update, 100);
+setInterval(tick, 50);
+</script>
+</body>
+</html>
